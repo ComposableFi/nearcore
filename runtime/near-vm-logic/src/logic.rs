@@ -1228,7 +1228,6 @@ impl<'a> VMLogic<'a> {
         let (proof, _) =
             (0..number_proofs_parts).try_fold((vec![], 0), |(mut p, mut idx), _| {
                 // get the proof part length from the first four bytes of the chunk
-                dbg!(&proof_raw);
                 let proof_part_length =
                     u32::from_be_bytes(proof_raw[idx..idx + 4].try_into().unwrap());
                 let proof_raw_ptr = proofs_ptr + idx as u64 + 4;
@@ -1275,7 +1274,6 @@ impl<'a> VMLogic<'a> {
         let (proof, _) =
             (0..number_proofs_parts).try_fold((vec![], 0), |(mut p, mut idx), _| {
                 // get the proof part length from the first four bytes of the chunk
-                dbg!(&proof_raw);
                 let proof_part_length =
                     u32::from_be_bytes(proof_raw[idx..idx + 4].try_into().unwrap());
                 let proof_raw_ptr = proofs_ptr + idx as u64 + 4;
@@ -1295,6 +1293,7 @@ impl<'a> VMLogic<'a> {
             })?;
         let item: Vec<(&[u8], Option<&[u8]>)> = vec![(&key, None)];
 
+        dbg!(&item);
         sp_trie::verify_trie_proof::<sp_trie::LayoutV0<sp_runtime::traits::BlakeTwo256>, _, _, _>(
             &sp_core::H256::from_slice(&root),
             &proof,

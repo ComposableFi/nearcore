@@ -1194,7 +1194,7 @@ fn test_verify_membership_trie_proof() {
         .flat_map(|p| vec![(p.len() as u32).to_le_bytes().to_vec(), p].concat())
         .collect::<Vec<_>>();
 
-    let mut logic_builder = VMLogicBuilder::default();
+    let mut logic_builder = VMLogicBuilder::free();
     let mut logic = logic_builder.build(get_context(vec![], false));
 
     logic
@@ -1264,7 +1264,7 @@ fn test_verify_non_membership_trie_proof() {
         .flat_map(|p| vec![(p.len() as u32).to_le_bytes().to_vec(), p].concat())
         .collect::<Vec<_>>();
 
-    let mut logic_builder = VMLogicBuilder::default();
+    let mut logic_builder = VMLogicBuilder::free();
     let mut logic = logic_builder.build(get_context(vec![], false));
 
     logic
@@ -1278,4 +1278,16 @@ fn test_verify_non_membership_trie_proof() {
             non_included_key.as_ptr() as _,
         )
         .unwrap();
+
+    // logic
+    //     .verify_non_membership_trie_proof(
+    //         root.as_bytes().len() as _,
+    //         root.as_bytes().as_ptr() as _,
+    //         number_of_proofs as _,
+    //         proof_raw.len() as _,
+    //         proof_raw.as_ptr() as _,
+    //         non_included_key.len() as _,
+    //         non_included_key.as_ptr() as _,
+    //     )
+    //     .unwrap();
 }

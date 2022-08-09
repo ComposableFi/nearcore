@@ -29,6 +29,7 @@ static CONFIG_DIFFS: &[(ProtocolVersion, &str)] = &[
     (53, include_config!("53.txt")),
     #[cfg(feature = "protocol_feature_account_id_in_function_call_permission")]
     (130, include_config!("130.txt")),
+    (364, include_config!("364.txt")),
 ];
 
 /// Testnet parameters for versions <= 29, which (incorrectly) differed from mainnet parameters

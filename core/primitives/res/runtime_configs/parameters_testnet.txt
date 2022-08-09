@@ -126,8 +126,8 @@ wasm_alt_bn128_g1_sum_base: 3_175_314_375
 wasm_alt_bn128_g1_sum_element: 76_218_543
 
 # Smart contract limits
-max_gas_burnt: 200_000_000_000_000
-max_gas_burnt_view: 200_000_000_000_000
+max_gas_burnt: 1_000_000_000_000_000
+max_gas_burnt_view: 1_000_000_000_000_000
 max_stack_height: 16_384
 stack_limiter_version: 0
 initial_memory_pages: 1_024
