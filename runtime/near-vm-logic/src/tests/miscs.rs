@@ -1206,8 +1206,8 @@ fn test_verify_membership_trie_proof() {
             proof_raw.as_ptr() as _,
             included_key.len() as _,
             included_key.as_ptr() as _,
-            hex::encode("0102").into_bytes().len() as _,
-            hex::encode("0102").into_bytes().as_ptr() as _,
+            hex::encode("01").into_bytes().len() as _,
+            hex::encode("01").into_bytes().as_ptr() as _,
         )
         .unwrap();
 }
@@ -1279,15 +1279,15 @@ fn test_verify_non_membership_trie_proof() {
         )
         .unwrap();
 
-    // logic
-    //     .verify_non_membership_trie_proof(
-    //         root.as_bytes().len() as _,
-    //         root.as_bytes().as_ptr() as _,
-    //         number_of_proofs as _,
-    //         proof_raw.len() as _,
-    //         proof_raw.as_ptr() as _,
-    //         non_included_key.len() as _,
-    //         non_included_key.as_ptr() as _,
-    //     )
-    //     .unwrap();
+    logic
+        .verify_non_membership_trie_proof(
+            root.as_bytes().len() as _,
+            root.as_bytes().as_ptr() as _,
+            number_of_proofs as _,
+            proof_raw.len() as _,
+            proof_raw.as_ptr() as _,
+            non_included_key.len() as _,
+            non_included_key.as_ptr() as _,
+        )
+        .unwrap();
 }
