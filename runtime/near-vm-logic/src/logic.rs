@@ -20,7 +20,7 @@ use near_primitives_core::types::{
     AccountId, Balance, EpochHeight, Gas, ProtocolVersion, StorageUsage,
 };
 use near_primitives_core::types::{GasDistribution, GasWeight};
-use near_vm_errors::{HostError, VMLogicError};
+use near_vm_errors::{AnyError, HostError, VMLogicError};
 use near_vm_errors::{InconsistentStateError, VMError};
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -953,6 +953,90 @@ impl<'a> VMLogic<'a> {
         self.internal_write_register(register_id, value_hash.as_slice().to_vec())
     }
 
+    /// Hashes the given value using sha256 and returns it into `register_id`.
+    ///
+    /// # Errors
+    ///
+    /// If `value_len + value_ptr` points outside the memory or the registers use more memory than
+    /// the limit with `MemoryAccessViolation`.
+    ///
+    /// # Cost
+    ///
+    /// `base + write_register_base + write_register_byte * num_bytes + sha512_base + sha512_byte * num_bytes`
+    pub fn sha2_512(&mut self, value_len: u64, value_ptr: u64, register_id: u64) -> Result<()> {
+        self.gas_counter.pay_base(sha512_base)?;
+        let value = self.get_vec_from_memory_or_register(value_ptr, value_len)?;
+        use sha2::Digest;
+
+        self.gas_counter.pay_per(sha512_byte, value.len() as u64)?;
+        let value_hash = sha2::Sha512::digest(&value);
+        self.internal_write_register(register_id, value_hash.as_slice().to_vec())
+    }
+
+    /// Hashes the given value using sha256 and returns it into `register_id`.
+    ///
+    /// # Errors
+    ///
+    /// If `value_len + value_ptr` points outside the memory or the registers use more memory than
+    /// the limit with `MemoryAccessViolation`.
+    ///
+    /// # Cost
+    ///
+    /// `base + write_register_base + write_register_byte * num_bytes + sha512_base + sha512_byte * num_bytes`
+    pub fn sha2_512_truncated(
+        &mut self,
+        value_len: u64,
+        value_ptr: u64,
+        register_id: u64,
+    ) -> Result<()> {
+        self.gas_counter.pay_base(sha512_base)?;
+        let value = self.get_vec_from_memory_or_register(value_ptr, value_len)?;
+        use sha2::Digest;
+        self.gas_counter.pay_per(sha512_byte, value.len() as u64)?;
+
+        let value_hash = sha2::Sha512::digest(&value);
+        self.internal_write_register(register_id, value_hash.as_slice()[..32].to_vec())
+    }
+
+    /// Hashes the given value using sha256 and returns it into `register_id`.
+    ///
+    /// # Errors
+    ///
+    /// If `value_len + value_ptr` points outside the memory or the registers use more memory than
+    /// the limit with `MemoryAccessViolation`.
+    ///
+    /// # Cost
+    ///
+    /// `base + write_register_base + write_register_byte * num_bytes + sha3512_base + sha3512_byte * num_bytes`
+    pub fn sha3_512(&mut self, value_len: u64, value_ptr: u64, register_id: u64) -> Result<()> {
+        self.gas_counter.pay_base(sha3512_base)?;
+        let value = self.get_vec_from_memory_or_register(value_ptr, value_len)?;
+        use sha3::Digest;
+
+        self.gas_counter.pay_per(sha3512_byte, value.len() as u64)?;
+        let value_hash = sha3::Sha3_512::digest(&value);
+        self.internal_write_register(register_id, value_hash.as_slice().to_vec())
+    }
+
+    /// Hashes the given value using sha256 and returns it into `register_id`.
+    ///
+    /// # Errors
+    ///
+    /// If `value_len + value_ptr` points outside the memory or the registers use more memory than
+    /// the limit with `MemoryAccessViolation`.
+    ///
+    /// # Cost
+    ///
+    /// `base + write_register_base + write_register_byte * num_bytes + blake2_256_base + blake2_256_byte * num_bytes`
+    pub fn blake2_256(&mut self, value_len: u64, value_ptr: u64, register_id: u64) -> Result<()> {
+        self.gas_counter.pay_base(blake2_256_base)?;
+        let value = self.get_vec_from_memory_or_register(value_ptr, value_len)?;
+        use blake2::Digest;
+        self.gas_counter.pay_per(blake2_256_byte, value.len() as u64)?;
+        let value_hash = blake2::Blake2s256::digest(&value);
+        self.internal_write_register(register_id, value_hash.as_slice().to_vec())
+    }
+
     /// Hashes the given value using keccak256 and returns it into `register_id`.
     ///
     /// # Errors
@@ -1117,6 +1201,104 @@ impl<'a> VMLogic<'a> {
         };
 
         Ok(false as u64)
+    }
+
+    /// This function should verify membership in a trie proof using parity's sp-trie package
+    /// with a BlakeTwo256 Hasher
+    ///
+    /// The proof is a &[Vec<u8>] originally. In order to reconstruct it, each piece of the proof is encoded
+    /// using the first 4 byts to express the lenght of it.
+    pub fn verify_membership_trie_proof(
+        &mut self,
+        root_len: u64,
+        root_ptr: u64,
+        number_proofs_parts: u64,
+        proof_len: u64,
+        proofs_ptr: u64,
+        key_len: u64,
+        key_ptr: u64,
+        value_len: u64,
+        value_ptr: u64,
+    ) -> Result<()> {
+        let root = self.get_vec_from_memory_or_register(root_ptr, root_len)?;
+        let key = self.get_vec_from_memory_or_register(key_ptr, key_len)?;
+        let value = self.get_vec_from_memory_or_register(value_ptr, value_len)?;
+        let proof_raw = self.get_vec_from_memory_or_register(proofs_ptr, proof_len)?;
+
+        let (proof, _) =
+            (0..number_proofs_parts).try_fold((vec![], 0), |(mut p, mut idx), _| {
+                // get the proof part length from the first four bytes of the chunk
+                let proof_part_length =
+                    u32::from_le_bytes(proof_raw[idx..idx + 4].try_into().unwrap());
+                let proof_raw_ptr = proofs_ptr + idx as u64 + 4;
+
+                match self.get_vec_from_memory_or_register(proof_raw_ptr, proof_part_length as _) {
+                    Ok(current_proof) => {
+                        // advance the pointer
+                        idx += proof_part_length as usize + 4;
+
+                        // concatenate the proof part
+                        p.push(current_proof);
+
+                        Ok((p, idx))
+                    }
+                    Err(err) => return Err(err),
+                }
+            })?;
+
+        let item = vec![(key, Some(value))];
+        sp_trie::verify_trie_proof::<sp_trie::LayoutV0<sp_runtime::traits::BlakeTwo256>, _, _, _>(
+            &sp_core::H256::from_slice(&root),
+            &proof,
+            &item,
+        )
+        .map_err(|e| VMLogicError::ExternalError(AnyError::new(e)))
+    }
+
+    /// This function should verify non membership in a trie proof using parity's sp-trie package
+    /// with a BlakeTwo256 Hasher
+    pub fn verify_non_membership_trie_proof(
+        &mut self,
+        root_len: u64,
+        root_ptr: u64,
+        number_proofs_parts: u64,
+        proof_len: u64,
+        proofs_ptr: u64,
+        key_len: u64,
+        key_ptr: u64,
+    ) -> Result<()> {
+        let root = self.get_vec_from_memory_or_register(root_ptr, root_len)?;
+        let key = self.get_vec_from_memory_or_register(key_ptr, key_len)?;
+        let proof_raw = self.get_vec_from_memory_or_register(proofs_ptr, proof_len)?;
+
+        let (proof, _) =
+            (0..number_proofs_parts).try_fold((vec![], 0), |(mut p, mut idx), _| {
+                // get the proof part length from the first four bytes of the chunk
+                let proof_part_length =
+                    u32::from_le_bytes(proof_raw[idx..idx + 4].try_into().unwrap());
+                let proof_raw_ptr = proofs_ptr + idx as u64 + 4;
+
+                match self.get_vec_from_memory_or_register(proof_raw_ptr, proof_part_length as _) {
+                    Ok(current_proof) => {
+                        // advance the pointer
+                        idx += proof_part_length as usize + 4;
+
+                        // concatenate the proof part
+                        p.push(current_proof);
+
+                        Ok((p, idx))
+                    }
+                    Err(err) => return Err(err),
+                }
+            })?;
+        let item: Vec<(&[u8], Option<&[u8]>)> = vec![(&key, None)];
+
+        sp_trie::verify_trie_proof::<sp_trie::LayoutV0<sp_runtime::traits::BlakeTwo256>, _, _, _>(
+            &sp_core::H256::from_slice(&root),
+            &proof,
+            &item,
+        )
+        .map_err(|e| VMLogicError::ExternalError(AnyError::new(e)))
     }
 
     /// Called by gas metering injected into Wasm. Counts both towards `burnt_gas` and `used_gas`.
@@ -2785,6 +2967,38 @@ impl<'a> VMLogic<'a> {
             }
         }
         Ok(())
+    }
+
+    /// Verify an ED25519 signature given a message and a public key.
+    /// # Cost
+    ///
+    /// `base + write_register_base + write_register_byte * num_bytes + ed25519_verify_base + ed25519_verify_byte * num_bytes`
+
+    pub fn ed25519_verify(
+        &mut self,
+        sig_len: u64,
+        sig_ptr: u64,
+        msg_len: u64,
+        msg_ptr: u64,
+        pub_key_len: u64,
+        pub_key_ptr: u64,
+    ) -> Result<u64> {
+        use ed25519_dalek::{PublicKey, Signature, Verifier};
+
+        self.gas_counter.pay_base(ed25519_verify_base)?;
+        self.gas_counter.pay_per(ed25519_verify_byte, msg_len as u64)?;
+        let signature_array = self.get_vec_from_memory_or_register(sig_ptr, sig_len)?;
+        let msg = self.get_vec_from_memory_or_register(msg_ptr, msg_len)?;
+        let pub_key_array = self.get_vec_from_memory_or_register(pub_key_ptr, pub_key_len)?;
+        let pub_key = PublicKey::from_bytes(&pub_key_array)
+            .map_err(|e| VMLogicError::ExternalError(AnyError::new(e.to_string())))?;
+        let signature = Signature::from_bytes(&signature_array)
+            .map_err(|e| VMLogicError::ExternalError(AnyError::new(e.to_string())))?;
+
+        match pub_key.verify(&msg, &signature).is_ok() {
+            false => Ok(0),
+            true => Ok(1),
+        }
     }
 }
 
