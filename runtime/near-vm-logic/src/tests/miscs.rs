@@ -468,7 +468,7 @@ fn test_sha512() {
     let mut logic = logic_builder.build(get_context(vec![], false));
     let data = b"tesdsst";
 
-    logic.sha512(data.len() as _, data.as_ptr() as _, 0).unwrap();
+    logic.sha2_512(data.len() as _, data.as_ptr() as _, 0).unwrap();
     let res = &vec![0u8; 64];
     logic.read_register(0, res.as_ptr() as _).expect("OK");
     assert_eq!(
@@ -481,17 +481,17 @@ fn test_sha512() {
         ]
     );
     assert_costs(map! {
+        ExtCosts::write_register_byte: 64,
+        ExtCosts::sha512_base: 1,
+        ExtCosts::read_register_byte: 64,
+        ExtCosts::write_memory_byte: 64,
         ExtCosts::base: 1,
         ExtCosts::read_memory_base: 1,
-        ExtCosts::read_memory_byte: data.len() as _,
-        ExtCosts::write_memory_base: 1,
-        ExtCosts::write_memory_byte: 32,
         ExtCosts::read_register_base: 1,
-        ExtCosts::read_register_byte: 32,
+        ExtCosts::read_memory_byte: 7,
+        ExtCosts::write_memory_base: 1,
         ExtCosts::write_register_base: 1,
-        ExtCosts::write_register_byte: 32,
-        ExtCosts::sha512_base: 1,
-        ExtCosts::sha512_byte: data.len() as _,
+        ExtCosts::sha512_byte: 7,
     });
 }
 
@@ -501,7 +501,7 @@ fn test_sha512_truncated() {
     let mut logic = logic_builder.build(get_context(vec![], false));
     let data = b"tesdsst";
 
-    logic.sha512_truncated(data.len() as _, data.as_ptr() as _, 0).unwrap();
+    logic.sha2_512_truncated(data.len() as _, data.as_ptr() as _, 0).unwrap();
     let res = &vec![0u8; 32];
     logic.read_register(0, res.as_ptr() as _).expect("OK");
     assert_eq!(
@@ -545,17 +545,17 @@ fn test_sha3_512() {
         ]
     );
     assert_costs(map! {
-        ExtCosts::base: 1,
-        ExtCosts::read_memory_base: 1,
-        ExtCosts::read_memory_byte: data.len() as _,
-        ExtCosts::write_memory_base: 1,
-        ExtCosts::write_memory_byte: 32,
-        ExtCosts::read_register_base: 1,
-        ExtCosts::read_register_byte: 32,
-        ExtCosts::write_register_base: 1,
-        ExtCosts::write_register_byte: 32,
+        ExtCosts::read_register_byte: 64,
         ExtCosts::sha3512_base: 1,
-        ExtCosts::sha3512_byte: data.len() as _,
+        ExtCosts::write_memory_base: 1,
+        ExtCosts::read_memory_byte: 7,
+        ExtCosts::base: 1,
+        ExtCosts::write_register_byte: 64,
+        ExtCosts::sha3512_byte: 7,
+        ExtCosts::write_memory_byte: 64,
+        ExtCosts::write_register_base: 1,
+        ExtCosts::read_memory_base: 1,
+        ExtCosts::read_register_base: 1,
     });
 }
 
@@ -1013,112 +1013,38 @@ fn test_ed25519_verify() {
         107, 108, 97, 100, 106, 102, 107, 108, 106, 97, 100, 115, 107,
     ];
 
-    logic
-        .ed25519_verify(
-            signature.len() as _,
-            signature.as_ptr() as _,
-            message.len() as _,
-            message.as_ptr() as _,
-            public_key.len() as _,
-            public_key.as_ptr() as _,
-            0,
-        )
-        .unwrap();
+    assert_eq!(
+        logic
+            .ed25519_verify(
+                signature.len() as _,
+                signature.as_ptr() as _,
+                message.len() as _,
+                message.as_ptr() as _,
+                public_key.len() as _,
+                public_key.as_ptr() as _,
+            )
+            .unwrap(),
+        1
+    );
 
-    let res = &vec![0u8; 1];
-    logic.read_register(0, res.as_ptr() as _).expect("OK");
-    assert_eq!(res.as_slice(), &[1]);
-
-    logic
-        .ed25519_verify(
-            bad_signature.len() as _,
-            bad_signature.as_ptr() as _,
-            message.len() as _,
-            message.as_ptr() as _,
-            public_key.len() as _,
-            public_key.as_ptr() as _,
-            0,
-        )
-        .unwrap();
-    logic.read_register(0, res.as_ptr() as _).expect("OK");
-    assert_eq!(res.as_slice(), &[0]);
+    assert_eq!(
+        logic
+            .ed25519_verify(
+                bad_signature.len() as _,
+                bad_signature.as_ptr() as _,
+                message.len() as _,
+                message.as_ptr() as _,
+                public_key.len() as _,
+                public_key.as_ptr() as _,
+            )
+            .unwrap(),
+        0
+    );
     assert_costs(map! {
-        ExtCosts::base: 1,
-        ExtCosts::read_memory_base: 1,
-        ExtCosts::read_memory_byte: 32,
-        ExtCosts::write_memory_base: 1,
-        ExtCosts::write_memory_byte: 32,
-        ExtCosts::read_register_base: 1,
-        ExtCosts::read_register_byte: 32,
-        ExtCosts::write_register_base: 1,
-        ExtCosts::write_register_byte: 32,
-        ExtCosts::ed25519_verify_base: 1,
-        ExtCosts::ed25519_verify_byte: 32,
-    });
-}
-
-#[test]
-fn test_sr25519_verify() {
-    let mut logic_builder = VMLogicBuilder::default();
-    let mut logic = logic_builder.build(get_context(vec![], false));
-
-    let message: [u8; 32] = [
-        107, 97, 106, 100, 108, 102, 107, 106, 97, 108, 107, 102, 106, 97, 107, 108, 102, 106, 100,
-        107, 108, 97, 100, 106, 102, 107, 108, 106, 97, 100, 115, 107,
-    ];
-    let signature: [u8; 64] = [
-        106, 144, 17, 34, 142, 65, 191, 241, 233, 250, 132, 168, 204, 173, 122, 196, 118, 248, 159,
-        159, 254, 37, 153, 84, 248, 104, 206, 217, 168, 65, 12, 74, 183, 134, 143, 30, 123, 61,
-        112, 153, 244, 109, 199, 195, 164, 0, 7, 55, 26, 199, 164, 219, 147, 217, 157, 239, 198,
-        108, 162, 246, 52, 49, 116, 132,
-    ];
-
-    let public_key: [u8; 32] = [
-        190, 72, 112, 6, 182, 204, 56, 92, 5, 158, 148, 55, 136, 35, 90, 216, 30, 35, 86, 208, 210,
-        66, 158, 72, 67, 25, 35, 217, 88, 145, 65, 113,
-    ];
-
-    logic
-        .sr25519_verify(
-            signature.len() as _,
-            signature.as_ptr() as _,
-            message.len() as _,
-            message.as_ptr() as _,
-            public_key.len() as _,
-            public_key.as_ptr() as _,
-            0,
-        )
-        .unwrap();
-
-    let res = &vec![0u8; 1];
-    logic.read_register(0, res.as_ptr() as _).expect("OK");
-    assert_eq!(res.as_slice(), &[1]);
-
-    logic
-        .sr25519_verify(
-            signature.len() as _,
-            signature.as_ptr() as _,
-            message.len() as _,
-            [1; 32].as_ptr() as _,
-            public_key.len() as _,
-            public_key.as_ptr() as _,
-            0,
-        )
-        .unwrap();
-    logic.read_register(0, res.as_ptr() as _).expect("OK");
-    assert_eq!(res.as_slice(), &[0]);
-    assert_costs(map! {
-        ExtCosts::base: 1,
-        ExtCosts::read_memory_base: 1,
-        ExtCosts::read_memory_byte: 32,
-        ExtCosts::write_memory_base: 1,
-        ExtCosts::write_memory_byte: 32,
-        ExtCosts::read_register_base: 1,
-        ExtCosts::read_register_byte: 32,
-        ExtCosts::write_register_base: 1,
-        ExtCosts::write_register_byte: 32,
-        ExtCosts::sr25519_verify_base: 1,
-        ExtCosts::sr25519_verify_byte: 32,
+        ExtCosts::read_memory_byte: 256,
+        ExtCosts::ed25519_verify_byte: 64,
+        ExtCosts::read_memory_base: 6,
+        ExtCosts::ed25519_verify_base: 2,
     });
 }
 

@@ -963,7 +963,7 @@ impl<'a> VMLogic<'a> {
     /// # Cost
     ///
     /// `base + write_register_base + write_register_byte * num_bytes + sha512_base + sha512_byte * num_bytes`
-    pub fn sha512(&mut self, value_len: u64, value_ptr: u64, register_id: u64) -> Result<()> {
+    pub fn sha2_512(&mut self, value_len: u64, value_ptr: u64, register_id: u64) -> Result<()> {
         self.gas_counter.pay_base(sha512_base)?;
         let value = self.get_vec_from_memory_or_register(value_ptr, value_len)?;
         use sha2::Digest;
@@ -983,7 +983,7 @@ impl<'a> VMLogic<'a> {
     /// # Cost
     ///
     /// `base + write_register_base + write_register_byte * num_bytes + sha512_base + sha512_byte * num_bytes`
-    pub fn sha512_truncated(
+    pub fn sha2_512_truncated(
         &mut self,
         value_len: u64,
         value_ptr: u64,
@@ -2982,8 +2982,7 @@ impl<'a> VMLogic<'a> {
         msg_ptr: u64,
         pub_key_len: u64,
         pub_key_ptr: u64,
-        register_id: u64,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         use ed25519_dalek::{PublicKey, Signature, Verifier};
 
         self.gas_counter.pay_base(ed25519_verify_base)?;
@@ -2996,38 +2995,10 @@ impl<'a> VMLogic<'a> {
         let signature = Signature::from_bytes(&signature_array)
             .map_err(|e| VMLogicError::ExternalError(AnyError::new(e.to_string())))?;
 
-        let value = pub_key.verify(&msg, &signature).is_ok();
-        self.internal_write_register(register_id, vec![u8::from(value)])
-    }
-
-    /// Verify an Schnorrkel signature given a message and a public key.
-    /// # Cost
-    ///
-    /// `base + write_register_base + write_register_byte * num_bytes + sr25519_verify_base + sr25519_verify_byte * num_bytes`
-    pub fn sr25519_verify(
-        &mut self,
-        sig_len: u64,
-        sig_ptr: u64,
-        msg_len: u64,
-        msg_ptr: u64,
-        pub_key_len: u64,
-        pub_key_ptr: u64,
-        register_id: u64,
-    ) -> Result<()> {
-        use schnorrkel::{PublicKey, Signature};
-
-        self.gas_counter.pay_base(sr25519_verify_base)?;
-        self.gas_counter.pay_per(sr25519_verify_byte, msg_len as u64)?;
-        let signature_array = self.get_vec_from_memory_or_register(sig_ptr, sig_len)?;
-        let msg = self.get_vec_from_memory_or_register(msg_ptr, msg_len)?;
-        let pub_key_array = self.get_vec_from_memory_or_register(pub_key_ptr, pub_key_len)?;
-        let pub_key = PublicKey::from_bytes(&pub_key_array)
-            .map_err(|e| VMLogicError::ExternalError(AnyError::new(e.to_string())))?;
-        let signature = Signature::from_bytes(&signature_array)
-            .map_err(|e| VMLogicError::ExternalError(AnyError::new(e.to_string())))?;
-
-        let value = pub_key.verify_simple(b"substrate", &msg, &signature).is_ok();
-        self.internal_write_register(register_id, vec![u8::from(value)])
+        match pub_key.verify(&msg, &signature).is_ok() {
+            false => Ok(0),
+            true => Ok(1),
+        }
     }
 }
 
