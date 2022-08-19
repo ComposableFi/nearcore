@@ -2,6 +2,7 @@ use crate::near_primitives::version::PROTOCOL_VERSION;
 use crate::{actions::execute_function_call, ext::RuntimeExt};
 use near_crypto::{KeyType, PublicKey};
 use near_primitives::runtime::config_store::RuntimeConfigStore;
+use near_primitives::serialize::to_base64;
 use near_primitives::{
     account::{AccessKey, Account},
     borsh::BorshDeserialize,
@@ -12,7 +13,6 @@ use near_primitives::{
         apply_state::ApplyState,
         migration_data::{MigrationData, MigrationFlags},
     },
-    serialize::to_base64,
     transaction::FunctionCallAction,
     trie_key::trie_key_parsers,
     types::{AccountId, EpochInfoProvider, Gas},
@@ -151,13 +151,19 @@ impl TrieViewer {
                 break;
             }
             values.push(StateItem {
-                key: to_base64(&key[acc_sep_len..]),
-                value: to_base64(&value),
+                key: key[acc_sep_len..].to_vec(),
+                value: value,
                 proof: vec![],
             });
         }
         // TODO(2076): Add proofs for the storage items.
-        Ok(ViewStateResult { values, proof: vec![] })
+        let trie = state_update.trie();
+        let root = state_update.get_root();
+
+        let (proof_state, raw_proof) = trie.get_proof(&root, &query)?;
+        let serialized_proof = raw_proof.iter().map(|p| to_base64(&**p)).collect();
+
+        Ok(ViewStateResult { values, proof: Some((proof_state, serialized_proof)) })
     }
 
     pub fn call_function(

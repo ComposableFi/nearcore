@@ -3,7 +3,7 @@ use near_primitives::{
     account::Account,
     hash::hash as sha256,
     hash::CryptoHash,
-    views::{StateItem, ViewApplyState},
+    views::{ProofPresence, StateItem, ViewApplyState},
 };
 use near_primitives::{
     test_utils::MockEpochInfoProvider,
@@ -105,7 +105,9 @@ fn test_view_call_with_args() {
 
 #[test]
 fn test_view_state() {
-    let (_, tries, root) = get_runtime_and_trie();
+    // in order to ensure determinism under all conditions (compiler, build output, etc)
+    // avoid deploying a test contract. See issue #7238
+    let (_, tries, root) = get_runtime_and_trie(false);
     let shard_uid = TEST_SHARD_UID;
     let mut state_update = tries.new_trie_update(shard_uid, root);
     state_update.set(
@@ -132,12 +134,12 @@ fn test_view_state() {
     let state_update = tries.new_trie_update(shard_uid, new_root);
     let trie_viewer = TrieViewer::default();
     let result = trie_viewer.view_state(&state_update, &alice_account(), b"").unwrap();
-    assert_eq!(result.proof, Vec::<String>::new());
+    assert_eq!(result.proof, Some((ProofPresence::Absent, ["AwEAAAAQeCC3sbe18vLEata/zo1C7+9cOijOmZrI27xJZ+SpzzMyCgAAAAAAAA==", "AQUCv3bNFVGGZS/TOlpHqqXRpxPXvaRlFU+gE8BM4GyIwpWnmEa/D1YpSfNTICSr1f0dUsULk38MJm2erDf0wtl3y9UgieFjNRmdMjEmjaSTnbCR/ZHWttN1jN2YfNYMc+q5/gkAAAAAAAA=", "AwMAAAAWFsbwm2TFX4GHLT5G1LSpF8UkG7zQV1ohXBMR/OQcUAKZ3gwDAAAAAAAA", "ASAC7S1KwgLNl0HPdSo8soL8sGOmPhL7O0xTSR8sDDR5pZrzu0ty3UPYJ5UKrFGKxXoyyyNG75AF9hnJHO3xxFkf5NQCAAAAAAAA", "AwEAAAAW607KPj2q3O8dF6XkfALiIrd9mqGir2UlYIcZuLNksTsvAgAAAAAAAA==", "AQhAP4sMdbiWZPtV6jz8hYKzRFSgwaSlQKiGsQXogAmMcrLOl+SJfiCOXMTEZ2a1ebmQOEGkRYa30FaIlB46sLI2IPsBAAAAAAAA", "AwwAAAAWUubmVhcix0ZXN0PKtrEndk0LxM+qpzp0PVtjf+xlrzz4TT0qA+hTtm6BLlYBAAAAAAAA"].into_iter().map(String::from).collect())));
     assert_eq!(
         result.values,
         [
-            StateItem { key: "dGVzdDEyMw==".to_string(), value: "MTIz".to_string(), proof: vec![] },
-            StateItem { key: "dGVzdDMyMQ==".to_string(), value: "MzIx".to_string(), proof: vec![] }
+            StateItem { key: b"test123".to_vec(), value: b"123".to_vec(), proof: vec![] },
+            StateItem { key: b"test321".to_vec(), value: b"321".to_vec(), proof: vec![] }
         ]
     );
     let result = trie_viewer.view_state(&state_update, &alice_account(), b"xyz").unwrap();
@@ -145,13 +147,15 @@ fn test_view_state() {
     let result = trie_viewer.view_state(&state_update, &alice_account(), b"test123").unwrap();
     assert_eq!(
         result.values,
-        [StateItem { key: "dGVzdDEyMw==".to_string(), value: "MTIz".to_string(), proof: vec![] }]
+        [StateItem { key: b"test123".to_vec(), value: b"123".to_vec(), proof: vec![] }]
     );
+
+    assert_eq!(result.proof, Some((ProofPresence::Present, ["AwEAAAAQeCC3sbe18vLEata/zo1C7+9cOijOmZrI27xJZ+SpzzMyCgAAAAAAAA==", "AQUCv3bNFVGGZS/TOlpHqqXRpxPXvaRlFU+gE8BM4GyIwpWnmEa/D1YpSfNTICSr1f0dUsULk38MJm2erDf0wtl3y9UgieFjNRmdMjEmjaSTnbCR/ZHWttN1jN2YfNYMc+q5/gkAAAAAAAA=", "AwMAAAAWFsbwm2TFX4GHLT5G1LSpF8UkG7zQV1ohXBMR/OQcUAKZ3gwDAAAAAAAA", "ASAC7S1KwgLNl0HPdSo8soL8sGOmPhL7O0xTSR8sDDR5pZrzu0ty3UPYJ5UKrFGKxXoyyyNG75AF9hnJHO3xxFkf5NQCAAAAAAAA", "AwEAAAAW607KPj2q3O8dF6XkfALiIrd9mqGir2UlYIcZuLNksTsvAgAAAAAAAA==", "AQhAP4sMdbiWZPtV6jz8hYKzRFSgwaSlQKiGsQXogAmMcrLOl+SJfiCOXMTEZ2a1ebmQOEGkRYa30FaIlB46sLI2IPsBAAAAAAAA", "AwwAAAAWUubmVhcix0ZXN0PKtrEndk0LxM+qpzp0PVtjf+xlrzz4TT0qA+hTtm6BLlYBAAAAAAAA", "AQoAVWCdny7wv/M1LvZASC3Fw0D/NNhI1NYwch9Ux+KZ2qRdQXPC1rNsCGRJ7nd66SfcNmRUVVvQY6EYCbsIiugO6gwBAAAAAAAA", "AAMAAAAgMjMDAAAApmWkWSBCL51Bfkhn79xPuKBKHz//H6B+mY6G9/eieuNtAAAAAAAAAA=="].into_iter().map(String::from).collect())));
 }
 
 #[test]
 fn test_view_state_too_large() {
-    let (_, tries, root) = get_runtime_and_trie();
+    let (_, tries, root) = get_runtime_and_trie(true);
     let mut state_update = tries.new_trie_update(TEST_SHARD_UID, root);
     set_account(
         &mut state_update,
@@ -165,7 +169,7 @@ fn test_view_state_too_large() {
 
 #[test]
 fn test_view_state_with_large_contract() {
-    let (_, tries, root) = get_runtime_and_trie();
+    let (_, tries, root) = get_runtime_and_trie(true);
     let mut state_update = tries.new_trie_update(TEST_SHARD_UID, root);
     let contract_code = [0; Account::MAX_ACCOUNT_DELETION_STORAGE_USAGE as usize].to_vec();
     set_account(

@@ -15,6 +15,7 @@ mod _proto {
 pub use _proto::network as proto;
 
 use ::borsh::{BorshDeserialize as _, BorshSerialize as _};
+use near_crypto::PublicKey;
 use near_network_primitives::time;
 use near_network_primitives::types::{
     Edge, PartialEdgeInfo, PeerChainInfoV2, PeerInfo, RoutedMessageBody, RoutedMessageV2,
@@ -26,64 +27,117 @@ use near_primitives::network::{AnnounceAccount, PeerId};
 use near_primitives::syncing::{EpochSyncFinalizationResponse, EpochSyncResponse};
 use near_primitives::transaction::SignedTransaction;
 use near_primitives::types::{AccountId, EpochId, ProtocolVersion};
+use near_primitives::validator_signer::ValidatorSigner;
 use near_primitives::version::PEER_MIN_ALLOWED_PROTOCOL_VERSION;
 use protobuf::Message as _;
 use std::fmt;
 use thiserror::Error;
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Hash)]
 pub struct PeerAddr {
     addr: std::net::SocketAddr,
     peer_id: Option<PeerId>,
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub struct Validator {
-    peers: Vec<PeerAddr>,
-    account_id: AccountId,
-    epoch_id: EpochId,
-    timestamp: time::Utc,
+#[derive(PartialEq, Eq, Clone, Debug, Hash)]
+pub struct AccountData {
+    pub peers: Vec<PeerAddr>,
+    pub account_id: AccountId,
+    pub epoch_id: EpochId,
+    pub timestamp: time::Utc,
 }
 
-impl Validator {
-    pub fn sign(self, signer: &dyn near_crypto::Signer) -> SignedValidator {
+// Limit on the size of the serialized AccountData message.
+// It is important to have such a constraint on the serialized proto,
+// because it may contain many unknown fields (which are dropped during parsing).
+pub const MAX_ACCOUNT_DATA_SIZE_BYTES: usize = 10000; // 10kB
+
+impl AccountData {
+    /// Serializes AccountData to proto and signs it using `signer`.
+    /// Panics if AccountData.account_id doesn't match signer.validator_id(),
+    /// as this would likely be a bug.
+    /// Returns an error if the serialized data is too large to be broadcasted.
+    /// TODO(gprusak): consider separating serialization from signing (so introducing an
+    /// intermediate SerializedAccountData type) so that sign() then could fail only
+    /// due to account_id mismatch. Then instead of panicking we could return an error
+    /// and the caller (who constructs the arguments) would do an unwrap(). This would
+    /// consistute a cleaner never-panicking interface.
+    pub fn sign(self, signer: &dyn ValidatorSigner) -> anyhow::Result<SignedAccountData> {
+        assert_eq!(
+            &self.account_id,
+            signer.validator_id(),
+            "AccountData.account_id doesn't match the signer's account_id"
+        );
         let payload = proto::AccountKeyPayload::from(&self).write_to_bytes().unwrap();
-        let signature = signer.sign(&payload);
-        SignedValidator { validator: self, payload: AccountKeySignedPayload { payload, signature } }
+        if payload.len() > MAX_ACCOUNT_DATA_SIZE_BYTES {
+            anyhow::bail!(
+                "payload size = {}, max is {}",
+                payload.len(),
+                MAX_ACCOUNT_DATA_SIZE_BYTES
+            );
+        }
+        let signature = signer.sign_account_key_payload(&payload);
+        Ok(SignedAccountData {
+            account_data: self,
+            payload: AccountKeySignedPayload { payload, signature },
+        })
     }
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Hash)]
 pub struct AccountKeySignedPayload {
     payload: Vec<u8>,
     signature: near_crypto::Signature,
 }
 
-#[derive(PartialEq, Eq, Clone, Debug)]
-pub struct SignedValidator {
-    validator: Validator,
-    // serialized and signed validator.
+impl AccountKeySignedPayload {
+    pub fn len(&self) -> usize {
+        self.payload.len()
+    }
+    pub fn verify(&self, key: &PublicKey) -> bool {
+        self.signature.verify(&self.payload, key)
+    }
+}
+
+// TODO(gprusak): if we expect this to be large, perhaps we should
+// pass around an Arc, rather than pass it by value.
+#[derive(PartialEq, Eq, Clone, Debug, Hash)]
+pub struct SignedAccountData {
+    account_data: AccountData,
+    // Serialized and signed AccountData.
     payload: AccountKeySignedPayload,
+}
+
+impl std::ops::Deref for SignedAccountData {
+    type Target = AccountData;
+    fn deref(&self) -> &Self::Target {
+        &self.account_data
+    }
+}
+
+impl SignedAccountData {
+    pub fn payload(&self) -> &AccountKeySignedPayload {
+        &self.payload
+    }
 }
 
 #[derive(PartialEq, Eq, Clone, Debug, Default)]
 pub struct RoutingTableUpdate {
     pub edges: Vec<Edge>,
     pub accounts: Vec<AnnounceAccount>,
-    pub validators: Vec<SignedValidator>,
 }
 
 impl RoutingTableUpdate {
     pub(crate) fn from_edges(edges: Vec<Edge>) -> Self {
-        Self { edges, accounts: Vec::new(), validators: Vec::new() }
+        Self { edges, accounts: Vec::new() }
     }
 
     pub fn from_accounts(accounts: Vec<AnnounceAccount>) -> Self {
-        Self { edges: Vec::new(), accounts, validators: Vec::new() }
+        Self { edges: Vec::new(), accounts }
     }
 
     pub(crate) fn new(edges: Vec<Edge>, accounts: Vec<AnnounceAccount>) -> Self {
-        Self { edges, accounts, validators: Vec::new() }
+        Self { edges, accounts }
     }
 }
 /// Structure representing handshake between peers.
@@ -133,6 +187,13 @@ pub enum HandshakeFailureReason {
     InvalidTarget,
 }
 
+#[derive(PartialEq, Eq, Clone, Debug)]
+pub struct SyncAccountsData {
+    pub accounts_data: Vec<SignedAccountData>,
+    pub requesting_full_sync: bool,
+    pub incremental: bool,
+}
+
 #[derive(PartialEq, Eq, Clone, Debug, strum::IntoStaticStr, strum::EnumVariantNames)]
 #[allow(clippy::large_enum_variant)]
 pub enum PeerMessage {
@@ -144,6 +205,8 @@ pub enum PeerMessage {
     SyncRoutingTable(RoutingTableUpdate),
     RequestUpdateNonce(PartialEdgeInfo),
     ResponseUpdateNonce(Edge),
+
+    SyncAccountsData(SyncAccountsData),
 
     PeersRequest,
     PeersResponse(Vec<PeerInfo>),
@@ -253,9 +316,7 @@ impl PeerMessage {
             | PeerMessage::EpochSyncRequest(_) => true,
             PeerMessage::Routed(r) => matches!(
                 r.msg.body,
-                RoutedMessageBody::QueryRequest { .. }
-                    | RoutedMessageBody::QueryResponse { .. }
-                    | RoutedMessageBody::ReceiptOutcomeRequest(_)
+                RoutedMessageBody::ReceiptOutcomeRequest(_)
                     | RoutedMessageBody::StateRequestHeader(_, _)
                     | RoutedMessageBody::StateRequestPart(_, _, _)
                     | RoutedMessageBody::TxStatusRequest(_, _)

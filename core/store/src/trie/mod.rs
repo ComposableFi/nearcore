@@ -1,17 +1,17 @@
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::collections::HashMap;
-use std::fmt;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
+use std::sync::Arc;
 
 use borsh::{BorshDeserialize, BorshSerialize};
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use byteorder::{LittleEndian, ReadBytesExt};
 
 use near_primitives::challenge::PartialState;
 use near_primitives::contract::ContractCode;
 use near_primitives::hash::{hash, CryptoHash};
 pub use near_primitives::shard_layout::ShardUId;
 use near_primitives::types::{StateRoot, StateRootNode};
+use near_primitives::views::ProofPresence;
 
 use crate::trie::insert_delete::NodesStorage;
 use crate::trie::iterator::TrieIterator;
@@ -94,7 +94,7 @@ enum TrieNode {
 #[derive(Clone, Debug)]
 pub struct TrieNodeWithSize {
     node: TrieNode,
-    pub memory_usage: u64,
+    memory_usage: u64,
 }
 
 impl TrieNodeWithSize {
@@ -137,12 +137,13 @@ impl TrieNode {
         }
     }
 
+    #[cfg(test)]
     fn print(
         &self,
-        f: &mut dyn fmt::Write,
+        f: &mut dyn std::fmt::Write,
         memory: &NodesStorage,
         spaces: &mut String,
-    ) -> fmt::Result {
+    ) -> std::fmt::Result {
         match self {
             TrieNode::Empty => {
                 write!(f, "{}Empty", spaces)?;
@@ -198,7 +199,7 @@ impl TrieNode {
         Ok(())
     }
 
-    #[allow(dead_code)]
+    #[cfg(test)]
     fn deep_to_string(&self, memory: &NodesStorage) -> String {
         let mut buf = String::new();
         self.print(&mut buf, memory, &mut "".to_string()).expect("printing failed");
@@ -254,7 +255,7 @@ impl TrieNode {
 
 #[derive(Debug, Eq, PartialEq)]
 #[allow(clippy::large_enum_variant)]
-enum RawTrieNode {
+pub enum RawTrieNode {
     Leaf(Vec<u8>, u32, CryptoHash),
     Branch([Option<CryptoHash>; 16], Option<(u32, CryptoHash)>),
     Extension(Vec<u8>, CryptoHash),
@@ -263,7 +264,7 @@ enum RawTrieNode {
 /// Trie node + memory cost of its subtree
 /// memory_usage is serialized, stored, and contributes to hash
 #[derive(Debug, Eq, PartialEq)]
-struct RawTrieNodeWithSize {
+pub struct RawTrieNodeWithSize {
     node: RawTrieNode,
     memory_usage: u64,
 }
@@ -289,26 +290,25 @@ fn decode_children(cursor: &mut Cursor<&[u8]>) -> Result<[Option<CryptoHash>; 16
 }
 
 impl RawTrieNode {
-    fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), std::io::Error> {
-        let mut cursor = Cursor::new(out);
+    fn encode_into(&self, out: &mut Vec<u8>) {
         // size in state_parts = size + 8 for RawTrieNodeWithSize + 8 for borsh vector length
         match &self {
             // size <= 1 + 4 + 4 + 32 + key_length + value_length
             RawTrieNode::Leaf(key, value_length, value_hash) => {
-                cursor.write_u8(LEAF_NODE)?;
-                cursor.write_u32::<LittleEndian>(key.len() as u32)?;
-                cursor.write_all(key)?;
-                cursor.write_u32::<LittleEndian>(*value_length)?;
-                cursor.write_all(value_hash.as_ref())?;
+                out.push(LEAF_NODE);
+                out.extend((key.len() as u32).to_le_bytes());
+                out.extend(key);
+                out.extend((*value_length as u32).to_le_bytes());
+                out.extend(value_hash.as_bytes());
             }
             // size <= 1 + 4 + 32 + value_length + 2 + 32 * num_children
             RawTrieNode::Branch(children, value) => {
                 if let Some((value_length, value_hash)) = value {
-                    cursor.write_u8(BRANCH_NODE_WITH_VALUE)?;
-                    cursor.write_u32::<LittleEndian>(*value_length)?;
-                    cursor.write_all(value_hash.as_ref())?;
+                    out.push(BRANCH_NODE_WITH_VALUE);
+                    out.extend((*value_length as u32).to_le_bytes());
+                    out.extend(value_hash.as_bytes());
                 } else {
-                    cursor.write_u8(BRANCH_NODE_NO_VALUE)?;
+                    out.push(BRANCH_NODE_NO_VALUE);
                 }
                 let mut bitmap: u16 = 0;
                 let mut pos: u16 = 1;
@@ -318,29 +318,28 @@ impl RawTrieNode {
                     }
                     pos <<= 1;
                 }
-                cursor.write_u16::<LittleEndian>(bitmap)?;
+                out.extend(bitmap.to_le_bytes());
                 for child in children.iter() {
                     if let Some(hash) = child {
-                        cursor.write_all(hash.as_ref())?;
+                        out.extend(hash.as_bytes());
                     }
                 }
             }
             // size <= 1 + 4 + key_length + 32
             RawTrieNode::Extension(key, child) => {
-                cursor.write_u8(EXTENSION_NODE)?;
-                cursor.write_u32::<LittleEndian>(key.len() as u32)?;
-                cursor.write_all(key)?;
-                cursor.write_all(child.as_ref())?;
+                out.push(EXTENSION_NODE);
+                out.extend((key.len() as u32).to_le_bytes());
+                out.extend(key);
+                out.extend(child.as_bytes());
             }
         }
-        Ok(())
     }
 
-    #[allow(dead_code)]
-    fn encode(&self) -> Result<Vec<u8>, std::io::Error> {
+    #[cfg(test)]
+    fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        self.encode_into(&mut out)?;
-        Ok(out)
+        self.encode_into(&mut out);
+        out
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, std::io::Error> {
@@ -382,16 +381,15 @@ impl RawTrieNode {
 }
 
 impl RawTrieNodeWithSize {
-    fn encode_into(&self, out: &mut Vec<u8>) -> Result<(), std::io::Error> {
-        self.node.encode_into(out)?;
-        out.write_u64::<LittleEndian>(self.memory_usage)
+    fn encode_into(&self, out: &mut Vec<u8>) {
+        self.node.encode_into(out);
+        out.extend(self.memory_usage.to_le_bytes());
     }
 
-    #[allow(dead_code)]
-    fn encode(&self) -> Result<Vec<u8>, std::io::Error> {
+    fn encode(&self) -> Vec<u8> {
         let mut out = Vec::new();
-        self.encode_into(&mut out)?;
-        Ok(out)
+        self.encode_into(&mut out);
+        out
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, std::io::Error> {
@@ -421,7 +419,7 @@ pub struct TrieRefcountChange {
     trie_node_or_value: Vec<u8>,
     /// Reference count difference which will be added to the total refcount if it corresponds to
     /// insertion and subtracted from it in the case of deletion.
-    rc: u32,
+    rc: std::num::NonZeroU32,
 }
 
 ///
@@ -470,6 +468,8 @@ pub struct ApplyStatePartResult {
 }
 
 impl Trie {
+    pub const EMPTY_ROOT: StateRoot = StateRoot::new();
+
     pub fn new(store: Box<dyn TrieStorage>) -> Self {
         Trie { storage: store }
     }
@@ -483,10 +483,6 @@ impl Trie {
             recorded: RefCell::new(Default::default()),
         };
         Trie { storage: Box::new(storage) }
-    }
-
-    pub fn empty_root() -> StateRoot {
-        StateRoot::default()
     }
 
     pub fn recorded_storage(&self) -> Option<PartialStorage> {
@@ -568,61 +564,49 @@ impl Trie {
         Ok(())
     }
 
+    fn retrieve_raw_node(
+        &self,
+        hash: &CryptoHash,
+    ) -> Result<Option<(std::sync::Arc<[u8]>, RawTrieNodeWithSize)>, StorageError> {
+        if hash == &Self::EMPTY_ROOT {
+            return Ok(None);
+        }
+        let bytes = self.storage.retrieve_raw_bytes(hash)?;
+        let node = RawTrieNodeWithSize::decode(&bytes).map_err(|err| {
+            StorageError::StorageInconsistentState(format!("Failed to decode node {hash}: {err}"))
+        })?;
+        Ok(Some((bytes, node)))
+    }
+
     fn move_node_to_mutable(
         &self,
         memory: &mut NodesStorage,
         hash: &CryptoHash,
     ) -> Result<StorageHandle, StorageError> {
-        if *hash == Trie::empty_root() {
-            Ok(memory.store(TrieNodeWithSize::empty()))
-        } else {
-            let bytes = self.storage.retrieve_raw_bytes(hash)?;
-            match RawTrieNodeWithSize::decode(&bytes) {
-                Ok(value) => {
-                    let result = memory.store(TrieNodeWithSize::from_raw(value));
-                    memory
-                        .refcount_changes
-                        .entry(*hash)
-                        .or_insert_with(|| (bytes.to_vec(), 0))
-                        .1 -= 1;
-                    Ok(result)
-                }
-                Err(_) => Err(StorageError::StorageInconsistentState(format!(
-                    "Failed to decode node {}",
-                    hash
-                ))),
+        match self.retrieve_raw_node(hash)? {
+            None => Ok(memory.store(TrieNodeWithSize::empty())),
+            Some((bytes, node)) => {
+                let result = memory.store(TrieNodeWithSize::from_raw(node));
+                memory.refcount_changes.entry(*hash).or_insert_with(|| (bytes.to_vec(), 0)).1 -= 1;
+                Ok(result)
             }
         }
     }
 
     fn retrieve_node(&self, hash: &CryptoHash) -> Result<TrieNodeWithSize, StorageError> {
-        if *hash == Trie::empty_root() {
-            return Ok(TrieNodeWithSize::empty());
-        }
-        let bytes = self.storage.retrieve_raw_bytes(hash)?;
-        match RawTrieNodeWithSize::decode(&bytes) {
-            Ok(value) => Ok(TrieNodeWithSize::from_raw(value)),
-            Err(_) => Err(StorageError::StorageInconsistentState(format!(
-                "Failed to decode node {}",
-                hash
-            ))),
+        match self.retrieve_raw_node(hash)? {
+            None => Ok(TrieNodeWithSize::empty()),
+            Some((_bytes, node)) => Ok(TrieNodeWithSize::from_raw(node)),
         }
     }
 
     pub fn retrieve_root_node(&self, root: &StateRoot) -> Result<StateRootNode, StorageError> {
-        if *root == Trie::empty_root() {
-            return Ok(StateRootNode::empty());
-        }
-        let data = self.storage.retrieve_raw_bytes(root)?;
-        match RawTrieNodeWithSize::decode(&data) {
-            Ok(value) => {
-                let memory_usage = TrieNodeWithSize::from_raw(value).memory_usage;
-                Ok(StateRootNode { data: data.to_vec(), memory_usage })
-            }
-            Err(_) => Err(StorageError::StorageInconsistentState(format!(
-                "Failed to decode node {}",
-                root
-            ))),
+        match self.retrieve_raw_node(root)? {
+            None => Ok(StateRootNode::empty()),
+            Some((bytes, node)) => Ok(StateRootNode {
+                data: bytes.to_vec(),
+                memory_usage: TrieNodeWithSize::from_raw(node).memory_usage,
+            }),
         }
     }
 
@@ -632,17 +616,12 @@ impl Trie {
         mut key: NibbleSlice<'_>,
     ) -> Result<Option<(u32, CryptoHash)>, StorageError> {
         let mut hash = *root;
-
         loop {
-            if hash == Trie::empty_root() {
-                return Ok(None);
-            }
-            let bytes = self.storage.retrieve_raw_bytes(&hash)?;
-            let node = RawTrieNodeWithSize::decode(&bytes).map_err(|_| {
-                StorageError::StorageInconsistentState("RawTrieNode decode failed".to_string())
-            })?;
-
-            match node.node {
+            let node = match self.retrieve_raw_node(&hash)? {
+                None => return Ok(None),
+                Some((_bytes, node)) => node.node,
+            };
+            match node {
                 RawTrieNode::Leaf(existing_key, value_length, value_hash) => {
                     if NibbleSlice::from_encoded(&existing_key).0 == key {
                         return Ok(Some((value_length, value_hash)));
@@ -705,18 +684,18 @@ impl Trie {
         let mut deletions = Vec::new();
         let mut insertions = Vec::new();
         for (trie_node_or_value_hash, (trie_node_or_value, rc)) in changes.into_iter() {
-            match rc.cmp(&0) {
-                Ordering::Greater => insertions.push(TrieRefcountChange {
+            if rc > 0 {
+                insertions.push(TrieRefcountChange {
                     trie_node_or_value_hash,
                     trie_node_or_value,
-                    rc: rc as u32,
-                }),
-                Ordering::Less => deletions.push(TrieRefcountChange {
+                    rc: std::num::NonZeroU32::new(rc as u32).unwrap(),
+                });
+            } else if rc < 0 {
+                deletions.push(TrieRefcountChange {
                     trie_node_or_value_hash,
                     trie_node_or_value,
-                    rc: (-rc) as u32,
-                }),
-                Ordering::Equal => {}
+                    rc: std::num::NonZeroU32::new((-rc) as u32).unwrap(),
+                });
             }
         }
         // Sort so that trie changes have unique representation
@@ -757,6 +736,72 @@ impl Trie {
     pub fn get_trie_nodes_count(&self) -> TrieNodesCount {
         self.storage.get_trie_nodes_count()
     }
+
+    /// Given a root and a key, it returns a MerkleProof for that key.
+    /// Note that it can be a proof of membership, or a proof of non membership. This is encoded
+    /// in the boolean of the return type.
+    ///
+    /// Hence, if [get_proof](#method.get_proof) returns (true, _), it means that the key-value are found in the trie
+    /// and a proof for that is presented. Similarly, if (false, _) is returned, it means that the key-value
+    /// pair does not belong to the trie and a proof for that is also returned.
+    ///
+    /// # Errors
+    ///
+    /// If the root or any subsequent nodes are not found in the trie, `StorageError` is returned
+    pub fn get_proof(
+        &self,
+        root: &CryptoHash,
+        key: &[u8],
+    ) -> Result<(ProofPresence, Vec<Arc<Vec<u8>>>), StorageError> {
+        let mut key = NibbleSlice::new(key);
+        let mut hash = *root;
+        if hash == Trie::EMPTY_ROOT {
+            return Ok((ProofPresence::from_found(key.is_empty()), vec![]));
+        }
+
+        let mut levels: Vec<Arc<Vec<u8>>> = vec![];
+        loop {
+            let bytes = self.storage.retrieve_raw_bytes(&hash)?;
+            let node = RawTrieNodeWithSize::decode(&bytes).map_err(|err| {
+                StorageError::StorageInconsistentState(format!(
+                    "RawTrieNode decode failed with {}",
+                    err.to_string()
+                ))
+            })?;
+            levels.push(Arc::new(bytes.to_vec()));
+
+            match node.node {
+                RawTrieNode::Leaf(existing_key, ..) => {
+                    let found = NibbleSlice::from_encoded(&existing_key).0 == key;
+                    return Ok((ProofPresence::from_found(found), levels));
+                }
+                RawTrieNode::Extension(existing_key, child_hash) => {
+                    let existing_key_nibble = NibbleSlice::from_encoded(&existing_key).0;
+                    let found = key.starts_with(&existing_key_nibble);
+
+                    key = key.mid(existing_key_nibble.len());
+                    hash = child_hash;
+                    if !found {
+                        return Ok((ProofPresence::Absent, levels));
+                    }
+                }
+                RawTrieNode::Branch(children, value) => {
+                    if key.is_empty() {
+                        return Ok((ProofPresence::from_found(value.is_some()), levels));
+                    }
+
+                    let idx = key.at(0) as usize;
+                    match children[idx] {
+                        Some(child) => {
+                            hash = child;
+                            key = key.mid(1);
+                        }
+                        None => return Ok((ProofPresence::Absent, levels)),
+                    }
+                }
+            };
+        }
+    }
 }
 
 /// Methods used in the runtime-parameter-estimator for measuring trie internal
@@ -772,7 +817,7 @@ pub mod estimator {
         let h = hash(&key);
         let node = RawTrieNode::Extension(key, h);
         let node_with_size = RawTrieNodeWithSize { node, memory_usage: 1 };
-        node_with_size.encode().unwrap()
+        node_with_size.encode()
     }
     /// Decode am extension node and return its inner key.
     /// This serves no purpose other than for the estimator.
@@ -800,6 +845,87 @@ mod tests {
     type TrieChanges = Vec<(Vec<u8>, Option<Vec<u8>>)>;
     const SHARD_VERSION: u32 = 1;
 
+    fn verify_proof(
+        key: &[u8],
+        levels: Vec<RawTrieNodeWithSize>,
+        // when verifying proofs of non-membership, this value should be None
+        maybe_expected_value: Option<&[u8]>,
+        mut expected_hash: CryptoHash,
+    ) -> bool {
+        let mut v = vec![];
+        let mut hash_node = |node: &RawTrieNodeWithSize| {
+            v.clear();
+            node.encode_into(&mut v);
+            CryptoHash::hash_bytes(&v)
+        };
+        let mut hash = Trie::EMPTY_ROOT;
+        let mut key = NibbleSlice::new(key);
+        if levels.is_empty() && maybe_expected_value.is_some() {
+            return false;
+        }
+        for node in levels.iter() {
+            match &node.node {
+                RawTrieNode::Leaf(node_key, value_length, value_hash) => {
+                    hash = hash_node(&node);
+                    if hash != expected_hash {
+                        return false;
+                    }
+
+                    let nib = &NibbleSlice::from_encoded(&node_key).0;
+                    if &key != nib {
+                        return maybe_expected_value.is_none();
+                    }
+
+                    return if let Some(value) = maybe_expected_value {
+                        if *value_length as usize != value.len() {
+                            return false;
+                        }
+                        CryptoHash::hash_bytes(value) == *value_hash
+                    } else {
+                        false
+                    };
+                }
+
+                RawTrieNode::Extension(node_key, child_hash) => {
+                    hash = hash_node(&node);
+                    if hash != expected_hash {
+                        return false;
+                    }
+                    expected_hash = *child_hash;
+
+                    // To avoid unnecessary copy
+                    let nib = NibbleSlice::from_encoded(&node_key).0;
+                    if !key.starts_with(&nib) {
+                        return maybe_expected_value.is_none();
+                    }
+                    key = key.mid(nib.len());
+                }
+                RawTrieNode::Branch(children, value) => {
+                    hash = hash_node(&node);
+                    if hash != expected_hash {
+                        return false;
+                    }
+
+                    if key.is_empty() {
+                        return *value
+                            == maybe_expected_value.map(|value| {
+                                (value.len().try_into().unwrap(), CryptoHash::hash_bytes(&value))
+                            });
+                    }
+                    let index = key.at(0);
+                    match &children[index as usize] {
+                        Some(child_hash) => {
+                            key = key.mid(1);
+                            expected_hash = *child_hash;
+                        }
+                        None => return maybe_expected_value.is_none(),
+                    }
+                }
+            }
+        }
+        maybe_expected_value.is_none() && hash == expected_hash
+    }
+
     fn test_clear_trie(
         tries: &ShardTries,
         root: &CryptoHash,
@@ -825,19 +951,19 @@ mod tests {
         let value_length = 3;
         let value_hash = hash(&value);
         let node = RawTrieNode::Leaf(vec![1, 2, 3], value_length, value_hash);
-        let buf = node.encode().expect("Failed to serialize");
+        let buf = node.encode();
         let new_node = RawTrieNode::decode(&buf).expect("Failed to deserialize");
         assert_eq!(node, new_node);
 
         let mut children: [Option<CryptoHash>; 16] = Default::default();
-        children[3] = Some(CryptoHash::default());
+        children[3] = Some(Trie::EMPTY_ROOT);
         let node = RawTrieNode::Branch(children, Some((value_length, value_hash)));
-        let buf = node.encode().expect("Failed to serialize");
+        let buf = node.encode();
         let new_node = RawTrieNode::decode(&buf).expect("Failed to deserialize");
         assert_eq!(node, new_node);
 
-        let node = RawTrieNode::Extension(vec![123, 245, 255], CryptoHash::default());
-        let buf = node.encode().expect("Failed to serialize");
+        let node = RawTrieNode::Extension(vec![123, 245, 255], Trie::EMPTY_ROOT);
+        let buf = node.encode();
         let new_node = RawTrieNode::decode(&buf).expect("Failed to deserialize");
         assert_eq!(node, new_node);
     }
@@ -848,7 +974,7 @@ mod tests {
         let tries = create_tries_complex(SHARD_VERSION, 2);
         let shard_uid = ShardUId { version: SHARD_VERSION, shard_id: 0 };
         let trie = tries.get_trie_for_shard(shard_uid);
-        let empty_root = Trie::empty_root();
+        let empty_root = Trie::EMPTY_ROOT;
         assert_eq!(trie.get(&empty_root, &[122]), Ok(None));
         let changes = vec![
             (b"doge".to_vec(), Some(b"coin".to_vec())),
@@ -875,7 +1001,7 @@ mod tests {
             (b"x".to_vec(), Some(b"333".to_vec())),
             (b"y".to_vec(), Some(b"444".to_vec())),
         ];
-        let root = test_populate_trie(&tries, &Trie::empty_root(), shard_uid, pairs.clone());
+        let root = test_populate_trie(&tries, &Trie::EMPTY_ROOT, shard_uid, pairs.clone());
         let mut iter_pairs = vec![];
         for pair in trie.iter(&root).unwrap() {
             let (key, value) = pair.unwrap();
@@ -897,7 +1023,7 @@ mod tests {
             (b"dog2".to_vec(), Some(b"puppy".to_vec())),
             (b"xxx".to_vec(), Some(b"puppy".to_vec())),
         ];
-        test_populate_trie(&tries, &Trie::empty_root(), shard_uid, changes);
+        test_populate_trie(&tries, &Trie::EMPTY_ROOT, shard_uid, changes);
     }
 
     #[test]
@@ -910,7 +1036,7 @@ mod tests {
             (b"catbb".to_vec(), Some(b"puppy".to_vec())),
             (b"dogax".to_vec(), Some(b"puppy".to_vec())),
         ];
-        test_populate_trie(&tries, &Trie::empty_root(), ShardUId::single_shard(), changes);
+        test_populate_trie(&tries, &Trie::EMPTY_ROOT, ShardUId::single_shard(), changes);
     }
 
     #[test]
@@ -935,8 +1061,7 @@ mod tests {
                 Some(vec![0]),
             ),
         ];
-        let root =
-            test_populate_trie(&tries, &Trie::empty_root(), ShardUId::single_shard(), changes);
+        let root = test_populate_trie(&tries, &Trie::EMPTY_ROOT, ShardUId::single_shard(), changes);
         let mut iter = trie.iter(&root).unwrap();
         iter.seek(&vec![0, 116, 101, 115, 116, 44]).unwrap();
         let mut pairs = vec![];
@@ -967,8 +1092,7 @@ mod tests {
             (vec![99, 44, 100, 58, 58, 50], Some(vec![1])),
             (vec![99, 44, 100, 58, 58, 50, 51], Some(vec![1])),
         ];
-        let root =
-            test_populate_trie(&tries, &Trie::empty_root(), ShardUId::single_shard(), initial);
+        let root = test_populate_trie(&tries, &Trie::EMPTY_ROOT, ShardUId::single_shard(), initial);
 
         let changes = vec![
             (vec![99, 44, 100, 58, 58, 45, 49], None),
@@ -989,8 +1113,7 @@ mod tests {
             (vec![2, 2, 3], Some(vec![1])),
             (vec![3, 2, 3], Some(vec![1])),
         ];
-        let root =
-            test_populate_trie(&tries, &Trie::empty_root(), ShardUId::single_shard(), initial);
+        let root = test_populate_trie(&tries, &Trie::EMPTY_ROOT, ShardUId::single_shard(), initial);
         for r in trie.iter(&root).unwrap() {
             r.unwrap();
         }
@@ -1012,9 +1135,9 @@ mod tests {
             let simplified_changes = simplify_changes(&trie_changes);
 
             let trie_changes1 =
-                trie.update(&Trie::empty_root(), trie_changes.iter().cloned()).unwrap();
+                trie.update(&Trie::EMPTY_ROOT, trie_changes.iter().cloned()).unwrap();
             let trie_changes2 =
-                trie.update(&Trie::empty_root(), simplified_changes.iter().cloned()).unwrap();
+                trie.update(&Trie::EMPTY_ROOT, simplified_changes.iter().cloned()).unwrap();
             if trie_changes1.new_root != trie_changes2.new_root {
                 eprintln!("{:?}", trie_changes);
                 eprintln!("{:?}", simplified_changes);
@@ -1036,7 +1159,7 @@ mod tests {
 
             let state_root = test_populate_trie(
                 &tries,
-                &Trie::empty_root(),
+                &Trie::EMPTY_ROOT,
                 ShardUId::single_shard(),
                 trie_changes.clone(),
             );
@@ -1058,7 +1181,7 @@ mod tests {
             let num_iterations = rng.gen_range(1, 20);
             let tries = create_tries();
             let trie = tries.get_trie_for_shard(ShardUId::single_shard());
-            let mut state_root = Trie::empty_root();
+            let mut state_root = Trie::EMPTY_ROOT;
             for _ in 0..num_iterations {
                 let trie_changes = gen_changes(&mut rng, 20);
                 state_root =
@@ -1079,7 +1202,7 @@ mod tests {
                     .collect::<Vec<_>>();
                 state_root =
                     test_populate_trie(&tries, &state_root, ShardUId::single_shard(), trie_changes);
-                assert_eq!(state_root, Trie::empty_root(), "Trie must be empty");
+                assert_eq!(state_root, Trie::EMPTY_ROOT, "Trie must be empty");
                 assert!(
                     trie.storage
                         .as_caching_storage()
@@ -1099,7 +1222,7 @@ mod tests {
     fn test_trie_restart() {
         let store = create_test_store();
         let tries = ShardTries::test(store.clone(), 1);
-        let empty_root = Trie::empty_root();
+        let empty_root = Trie::EMPTY_ROOT;
         let changes = vec![
             (b"doge".to_vec(), Some(b"coin".to_vec())),
             (b"docu".to_vec(), Some(b"value".to_vec())),
@@ -1120,7 +1243,7 @@ mod tests {
     fn test_trie_recording_reads() {
         let store = create_test_store();
         let tries = ShardTries::test(store, 1);
-        let empty_root = Trie::empty_root();
+        let empty_root = Trie::EMPTY_ROOT;
         let changes = vec![
             (b"doge".to_vec(), Some(b"coin".to_vec())),
             (b"docu".to_vec(), Some(b"value".to_vec())),
@@ -1147,7 +1270,7 @@ mod tests {
     fn test_trie_recording_reads_update() {
         let store = create_test_store();
         let tries = ShardTries::test(store, 1);
-        let empty_root = Trie::empty_root();
+        let empty_root = Trie::EMPTY_ROOT;
         let changes = vec![
             (b"doge".to_vec(), Some(b"coin".to_vec())),
             (b"docu".to_vec(), Some(b"value".to_vec())),
@@ -1182,7 +1305,7 @@ mod tests {
     fn test_dump_load_trie() {
         let store = create_test_store();
         let tries = ShardTries::test(store.clone(), 1);
-        let empty_root = Trie::empty_root();
+        let empty_root = Trie::EMPTY_ROOT;
         let changes = vec![
             (b"doge".to_vec(), Some(b"coin".to_vec())),
             (b"docu".to_vec(), Some(b"value".to_vec())),
@@ -1195,5 +1318,54 @@ mod tests {
         let tries2 = ShardTries::test(store2, 1);
         let trie2 = tries2.get_trie_for_shard(ShardUId::single_shard());
         assert_eq!(trie2.get(&root, b"doge").unwrap().unwrap(), b"coin");
+    }
+
+    #[test]
+    fn test_create_and_verify_proof() {
+        let changes = vec![
+            (b"doge".to_vec(), Some(b"coin".to_vec())),
+            (b"docu".to_vec(), Some(b"value".to_vec())),
+            (b"do".to_vec(), Some(b"verb".to_vec())),
+            (b"horse".to_vec(), Some(b"stallion".to_vec())),
+            (b"dog".to_vec(), Some(b"puppy".to_vec())),
+            (b"h".to_vec(), Some(b"value".to_vec())),
+        ];
+
+        let tries = create_tries();
+        let trie = tries.get_trie_for_shard(ShardUId::single_shard());
+
+        let root = test_populate_trie(
+            &tries,
+            &Trie::EMPTY_ROOT,
+            ShardUId::single_shard(),
+            changes.clone(),
+        );
+
+        for (k, v) in changes {
+            let (found, raw_proof) = trie.get_proof(&root, &k).unwrap();
+            let proof = raw_proof.iter().map(|p| RawTrieNodeWithSize::decode(p).unwrap()).collect();
+
+            assert_eq!(found, ProofPresence::Present);
+            dbg!(&k);
+            assert!(verify_proof(&k, proof, v.as_deref(), root));
+        }
+
+        let non_existing_keys =
+            [b"white_horse".as_ref(), b"white_rose".as_ref(), b"doge_elon".as_ref(), b"".as_ref()];
+
+        for non_existing_key in non_existing_keys {
+            let (found, raw_proof) = trie.get_proof(&root, non_existing_key).unwrap();
+            let proof = raw_proof.iter().map(|p| RawTrieNodeWithSize::decode(p).unwrap()).collect();
+            assert!(verify_proof(non_existing_key, proof, None, root));
+            assert_eq!(found, ProofPresence::Absent);
+        }
+
+        for non_existing_key in non_existing_keys {
+            let (found, raw_proof) = trie.get_proof(&root, non_existing_key).unwrap();
+            let proof = raw_proof.iter().map(|p| RawTrieNodeWithSize::decode(p).unwrap()).collect();
+            // duplicating this because RawTrieNodeWithSize does not implement Clone
+            assert!(!verify_proof(non_existing_key, proof, Some(b"0_value"), root));
+            assert_eq!(found, ProofPresence::Absent);
+        }
     }
 }
