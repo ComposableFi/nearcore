@@ -5,6 +5,7 @@ use near_network_primitives::types::{Edge, KnownPeerState};
 use near_primitives::network::{AnnounceAccount, PeerId};
 use near_primitives::types::AccountId;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tracing::debug;
 
 mod schema;
@@ -132,7 +133,9 @@ impl Store {
     /// Deletes rows with keys in <peers> from Peers column.
     pub fn delete_peer_states(&mut self, peers: &[PeerId]) -> Result<(), Error> {
         let mut update = self.0.new_update();
-        peers.iter().for_each(|p| update.delete::<schema::Peers>(p));
+        for p in peers {
+            update.delete::<schema::Peers>(p);
+        }
         self.0.commit(update).map_err(Error)
     }
 
@@ -142,14 +145,16 @@ impl Store {
     }
 }
 
-impl From<near_store::Store> for Store {
-    fn from(store: near_store::Store) -> Self {
-        Self(schema::Store::new(store.into_inner()))
+// TODO(mina86): Get rid of it.
+#[cfg(test)]
+impl From<near_store::NodeStorage> for Store {
+    fn from(store: near_store::NodeStorage) -> Self {
+        Self::from(store.into_inner(near_store::Temperature::Hot))
     }
 }
 
-impl From<&near_store::Store> for Store {
-    fn from(store: &near_store::Store) -> Self {
-        Self::from(store.clone())
+impl From<Arc<dyn near_store::db::Database>> for Store {
+    fn from(store: Arc<dyn near_store::db::Database>) -> Self {
+        Self(schema::Store::from(store))
     }
 }

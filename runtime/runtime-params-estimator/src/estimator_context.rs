@@ -123,12 +123,16 @@ impl<'c> Testbed<'c> {
 
     pub(crate) fn trie_caching_storage(&mut self) -> TrieCachingStorage {
         let store = self.inner.store();
-        let caching_storage =
-            TrieCachingStorage::new(store, TrieCache::new(), ShardUId::single_shard());
+        let caching_storage = TrieCachingStorage::new(
+            store,
+            TrieCache::new(0, false),
+            ShardUId::single_shard(),
+            false,
+        );
         caching_storage
     }
 
-    fn clear_caches(&mut self) {
+    pub(crate) fn clear_caches(&mut self) {
         // Flush out writes hanging in memtable
         self.inner.flush_db_write_buffer();
 

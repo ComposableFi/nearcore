@@ -78,7 +78,7 @@ impl From<&mem::HandshakeFailureReason> for net::HandshakeFailureReason {
 
 impl From<net::RoutingTableUpdate> for mem::RoutingTableUpdate {
     fn from(x: net::RoutingTableUpdate) -> Self {
-        Self { edges: x.edges, accounts: x.accounts, validators: vec![] }
+        Self { edges: x.edges, accounts: x.accounts }
     }
 }
 
@@ -157,6 +157,12 @@ impl From<&mem::PeerMessage> for net::PeerMessage {
             }
             mem::PeerMessage::RequestUpdateNonce(e) => net::PeerMessage::RequestUpdateNonce(e),
             mem::PeerMessage::ResponseUpdateNonce(e) => net::PeerMessage::ResponseUpdateNonce(e),
+
+            // This message is not supported, we translate it to an empty RoutingTableUpdate.
+            mem::PeerMessage::SyncAccountsData(_) => {
+                net::PeerMessage::SyncRoutingTable(net::RoutingTableUpdate::default())
+            }
+
             mem::PeerMessage::PeersRequest => net::PeerMessage::PeersRequest,
             mem::PeerMessage::PeersResponse(pis) => net::PeerMessage::PeersResponse(pis),
             mem::PeerMessage::BlockHeadersRequest(bhs) => {
@@ -166,7 +172,7 @@ impl From<&mem::PeerMessage> for net::PeerMessage {
             mem::PeerMessage::BlockRequest(bh) => net::PeerMessage::BlockRequest(bh),
             mem::PeerMessage::Block(b) => net::PeerMessage::Block(b),
             mem::PeerMessage::Transaction(t) => net::PeerMessage::Transaction(t),
-            mem::PeerMessage::Routed(r) => net::PeerMessage::Routed(Box::new(r.msg)),
+            mem::PeerMessage::Routed(r) => net::PeerMessage::Routed(Box::new(r.msg.clone())),
             mem::PeerMessage::Disconnect => net::PeerMessage::Disconnect,
             mem::PeerMessage::Challenge(c) => net::PeerMessage::Challenge(c),
             mem::PeerMessage::EpochSyncRequest(epoch_id) => {
